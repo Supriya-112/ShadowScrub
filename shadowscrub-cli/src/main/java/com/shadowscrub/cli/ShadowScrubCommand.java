@@ -5,40 +5,51 @@ import com.shadowscrub.core.detector.EmailDetector;
 import com.shadowscrub.core.strategy.MaskingStrategy;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+
 import java.nio.file.Files;
-import java.io.File;
+import java.nio.file.Path;
+import java.io.BufferedWriter;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Stream;
 
 @Command(name = "shadowscrub", mixinStandardHelpOptions = true, version = "1.0",
-        description = "ShadowScrub: Local-first PII Anonymizer.")
+        description = "ShadowScrub: Stream-based PII Anonymizer for Big Data.")
 public class ShadowScrubCommand implements Callable<Integer> {
 
-    @Parameters(index = "0", description = "The path to the file you want to scrub.")
-    private File file;
+    @Parameters(index = "0", description = "Input file path.")
+    private Path inputPath;
+
+    @Option(names = {"-o", "--output"}, description = "Output file path (optional).", defaultValue = "scrubbed_output.txt")
+    private Path outputPath;
 
     @Override
     public Integer call() throws Exception {
-        if (!file.exists()) {
-            System.err.println("❌ Error: File not found at " + file.getAbsolutePath());
+        if (!Files.exists(inputPath)) {
+            System.err.println("❌ Error: Input file not found.");
             return 1;
         }
 
-        System.out.println("🛡️  ShadowScrub is scanning: " + file.getName());
+        System.out.println("🛡️  ShadowScrub is streaming: " + inputPath.getFileName());
 
-        // Senior Design: Initialize engine with our detectors
         var engine = new ScrubbingEngine(List.of(new EmailDetector()), new MaskingStrategy());
-        
-        // Read the file, scrub it, and print to console (or save back)
-        String content = Files.readString(file.toPath());
-        String scrubbed = engine.scrubText(content);
 
-        System.out.println("\n--- SCRUBBED OUTPUT ---");
-        System.out.println(scrubbed);
-        System.out.println("-----------------------");
-        System.out.println("✅ Processing complete.");
-        
+        try (Stream<String> lines = Files.lines(inputPath);
+             BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
+            
+            engine.scrubStream(lines).forEach(line -> {
+                try {
+                    writer.write(line);
+                    writer.newLine();
+                } catch (Exception e) {
+                    throw new RuntimeException("Error writing to output file", e);
+                }
+            });
+        }
+
+        System.out.println("✅ Scrubbed data saved to: " + outputPath.toAbsolutePath());
         return 0;
     }
 
