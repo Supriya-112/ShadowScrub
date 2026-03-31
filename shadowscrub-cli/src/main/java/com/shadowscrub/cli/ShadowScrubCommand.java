@@ -34,7 +34,10 @@ public class ShadowScrubCommand implements Callable<Integer> {
 
         System.out.println("🛡️  ShadowScrub is streaming: " + inputPath.getFileName());
 
-        var engine = new ScrubbingEngine(List.of(new EmailDetector()), new MaskingStrategy());
+        var engine = new ScrubbingEngine(
+            List.of(new EmailDetector(), new CreditCardDetector()), 
+            new MaskingStrategy()
+        );
 
         try (Stream<String> lines = Files.lines(inputPath);
              BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
