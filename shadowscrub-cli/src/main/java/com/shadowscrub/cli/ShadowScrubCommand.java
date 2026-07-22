@@ -1,16 +1,23 @@
 package com.shadowscrub.cli;
 
+import com.shadowscrub.core.detector.CreditCardDetector;
+import com.shadowscrub.core.detector.CustomKeywordDetector;
+import com.shadowscrub.core.detector.EmailDetector;
+import com.shadowscrub.core.detector.IPAddressDetector;
+import com.shadowscrub.core.detector.PIIDetector;
 import com.shadowscrub.core.engine.ScrubbingEngine;
-import com.shadowscrub.core.detector.*;
 import com.shadowscrub.core.strategy.MaskingStrategy;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.io.BufferedWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -18,80 +25,79 @@ import java.util.concurrent.Callable;
 import java.util.stream.Stream;
 
 /**
- * The CLI entry point for ShadowScrub.
- * Uses Picocli for command-line parsing and Java NIO for memory-efficient streaming.
+ * Command-line entry point. Reads the input file as a stream, runs it through
+ * the scrubbing engine, and writes the anonymised result to the output file.
  */
 @Command(
-    name = "shadowscrub", 
-    mixinStandardHelpOptions = true, 
-    version = "1.0",
-    description = "🛡️  ShadowScrub: High-performance, local-first PII Anonymizer."
+    name = "shadowscrub",
+    mixinStandardHelpOptions = true,
+    version = "ShadowScrub 1.0",
+    description = "Local-first PII anonymizer and data sanitizer."
 )
 public class ShadowScrubCommand implements Callable<Integer> {
 
-    @Parameters(index = "0", description = "The path to the input file you want to scrub.")
+    @Parameters(index = "0", description = "File to scrub.")
     private Path inputPath;
 
-    @Option(names = {"-o", "--output"}, 
-            description = "The path for the scrubbed output file.", 
+    @Option(names = {"-o", "--output"},
+            description = "Where to write the scrubbed output (default: ${DEFAULT-VALUE}).",
             defaultValue = "scrubbed_output.txt")
     private Path outputPath;
 
-    @Option(names = {"-k", "--keywords"}, 
-            split = ",", 
-            description = "Optional: Custom keywords to scrub (e.g., 'CompanyInc,ProjectX').")
+    @Option(names = {"-k", "--keywords"},
+            split = ",",
+            description = "Extra keywords to redact, e.g. 'AcmeCorp,ProjectApollo'.")
     private Set<String> customKeywords;
 
+    private final PrintStream out = System.out;
+    private final PrintStream err = System.err;
+
     @Override
-    public Integer call() throws Exception {
+    public Integer call() throws IOException {
         if (!Files.exists(inputPath)) {
-            System.err.println("❌ Error: Input file not found at " + inputPath.toAbsolutePath());
+            err.println("Input file not found: " + inputPath.toAbsolutePath());
             return 1;
         }
-
         if (Files.isDirectory(inputPath)) {
-            System.err.println("❌ Error: Input path is a directory. Please provide a file.");
+            err.println("Input path is a directory; expected a file: " + inputPath);
             return 1;
         }
 
-        System.out.println("\n🚀 Initializing ShadowScrub Engine...");
-        System.out.println("📂 Input:  " + inputPath.getFileName());
-        System.out.println("📍 Output: " + outputPath.toAbsolutePath());
-
-        List<PIIDetector> detectors = new ArrayList<>();
-        detectors.add(new EmailDetector());
-        detectors.add(new CreditCardDetector()); 
-        detectors.add(new IPAddressDetector());   
-
-        // Add user-defined keywords if provided
-        if (customKeywords != null && !customKeywords.isEmpty()) {
-            detectors.add(new CustomKeywordDetector(customKeywords));
-            System.out.println("🏷️  Custom Dictionary Loaded: " + customKeywords);
-        }
-
-        // Initialize the Engine with a Masking Strategy
-        var engine = new ScrubbingEngine(detectors, new MaskingStrategy());
+        var engine = new ScrubbingEngine(buildDetectors(), new MaskingStrategy());
 
         try (Stream<String> lines = Files.lines(inputPath);
              BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
-            
-            System.out.println("⚙️  Processing via Java 25 Virtual Threads...");
-            
-            engine.scrubStream(lines).forEach(line -> {
-                try {
-                    writer.write(line);
-                    writer.newLine();
-                } catch (Exception e) {
-                    throw new RuntimeException("CRITICAL: Failed to write to output file", e);
-                }
-            });
-        } catch (Exception e) {
-            System.err.println("❌ Critical Engine Error: " + e.getMessage());
+
+            engine.scrub(lines, line -> writeLine(writer, line));
+        } catch (UncheckedIOException e) {
+            err.println("Failed writing output: " + e.getCause().getMessage());
             return 1;
         }
 
-        System.out.println("\n✅ Success! All detected PII has been anonymized.");
+        out.println("Done. Scrubbed output written to " + outputPath.toAbsolutePath());
         return 0;
+    }
+
+    private List<PIIDetector> buildDetectors() {
+        List<PIIDetector> detectors = new ArrayList<>();
+        detectors.add(new EmailDetector());
+        detectors.add(new CreditCardDetector());
+        detectors.add(new IPAddressDetector());
+        if (customKeywords != null && !customKeywords.isEmpty()) {
+            detectors.add(new CustomKeywordDetector(customKeywords));
+        }
+        return detectors;
+    }
+
+    private static void writeLine(BufferedWriter writer, String line) {
+        try {
+            writer.write(line);
+            writer.newLine();
+        } catch (IOException e) {
+            // Surfaced as a clean message by call(); unchecked so it can escape
+            // the Consumer the engine calls us through.
+            throw new UncheckedIOException(e);
+        }
     }
 
     public static void main(String[] args) {
